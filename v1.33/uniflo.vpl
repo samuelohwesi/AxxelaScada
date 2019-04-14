@@ -1,0 +1,1748 @@
+//-----------------------------------------------------------------------------
+// uniflo.vpl, created 2018-02-21 20:59
+// 
+//-----------------------------------------------------------------------------
+INCLUDE rtcu.inc
+// Uncomment math.inc to add math library support.
+INCLUDE math.inc
+
+INCLUDE .\itm_config.inc   
+INCLUDE .\itm_util.inc   
+INCLUDE .\itm_sms.inc   
+INCLUDE .\itm_network.inc   
+INCLUDE .\itm_mqtt.inc   
+
+
+
+
+//#DEFINE IT_MATION
+//#DEFINE CST_SIMUL
+//#DEFINE NO_GPRS  
+//#DEFINE NO_GSM
+//#DEFINE NO_NET
+
+#DEFINE DEBUG_MODBUS 0
+#DEFINE DEBUG_REGISTER 0
+
+/*0 : UINT8        1  byte
+    1 : UINT16       2  byte (word)
+    2 : UINT32       4  byte (long)
+    3 : REAL32       4  byte (single)
+    4 : INTREAL      8  byte (4 byte long represent the integer part and 4 byte float represent the fractional part)
+    5 : TIME         6  byte (yymmddhhmmss)
+    6 : STR22        22 byte (22 char, in the Uniflo only 21 can be displaed)
+    7 : OPTION       1  byte (list index)
+    8 : LOC_PTR      2  byte (location pointer)
+    9 : STR22        29 byte (29 char)
+    A : STR1         1  byte (1 char)
+    B : UINT16O      2  byte (word, reverse data storing)
+    C : UINT32O      4  byte (long, reverse data storing)
+    D : REAL32O      4  byte (single, reverse data storing))
+    E : STR8         8  byte (8 char)
+    F : Datablock    number of bytes is specified in the unit column
+*/
+
+
+#DEFINE CST_TYPE_UINT8        16#0 
+#DEFINE CST_TYPE_UINT16       16#1 
+#DEFINE CST_TYPE_UINT32       16#2
+#DEFINE CST_TYPE_REAL32       16#3 
+#DEFINE CST_TYPE_INTREAL      16#4
+#DEFINE CST_TYPE_STR          16#A 
+#DEFINE CST_TYPE_DATABLOCK    16#F
+#DEFINE CST_TYPE_RAW          16#E
+#DEFINE CST_TYPE_READ_CONF    16#10
+#DEFINE CST_TYPE_READ_ALL     16#11
+#DEFINE CST_TYPE_READ_ONE_CONF  16#12
+
+
+
+
+#DEFINE CST_MODBUS_STATUS_0_OK  0
+#DEFINE CST_MODBUS_STATUS_1_WRONG_QUERY_LENGTH  1
+#DEFINE CST_MODBUS_STATUS_2_WRONG_REGISTER  2
+#DEFINE CST_MODBUS_STATUS_3_WRONG_TYPE  3
+#DEFINE CST_MODBUS_STATUS_4_TIMEOUT  4
+#DEFINE CST_MODBUS_STATUS_5_WRONG_ANSWER_SIZE  5
+#DEFINE CST_MODBUS_STATUS_6_WRONG_ANSWER_ID  6
+#DEFINE CST_MODBUS_STATUS_7_WRONG_ANSWER_FUNCTION  7
+
+
+
+
+//  Input variables that can be configured via the configuration dialog (These are global)
+VAR_INPUT
+  
+   
+END_VAR;
+
+//  Output variables that can be configured via the configuration dialog (These are global)
+VAR_OUTPUT
+  LED_LAN : BOOL;
+  LED_GW   : BOOL;
+  SIMUL : BOOL;
+  UNIWIRE : BOOL;
+END_VAR;
+
+
+ 
+STRUCT_BLOCK ALIGN typeRegister
+   Name : ARRAY[0..30] OF SINT;
+   Unit : ARRAY[0..10] OF SINT;
+   ScanClass : int := CST_SCANCLASS_1_HR;
+   Address :int := 0;   
+   Type : sint := 0;
+   Length : sint := 0;
+   ValueF : float := 0.0;
+   ValueD : dint := 0;
+   ValueI : int := 0 ;
+   ValueB : sint := 0;   
+   Update : ARRAY[0..1] OF DINT;
+   lower : int := 0;
+   upper : int := 100;
+   ratio : float := 1.0;
+END_STRUCT_BLOCK;
+STRUCT_BLOCK ALIGN confRegister
+   Reg : int :=0;
+   Length : int :=0;
+   Tag : STRING;
+END_STRUCT_BLOCK;
+ 
+VAR
+   
+
+ 
+   mbNet1 : INT;
+   mbNet2 : INT;
+   mbRcv : modbusReceive;
+   clock : clockLinsecToTime;
+
+   
+   actualPort : SINT:=0 ;
+   statusPort : SINT:=CST_MODBUS_STATUS_0_OK ;
+   portNbTimeout : SINT :=0;
+   
+   ser1Rec       : serFrameReceiver;
+   rx1Buffer : ARRAY[0..256] of SINT;
+   ser2Rec       : serFrameReceiver;
+   rx2Buffer : ARRAY[0..256] of SINT;
+  
+   registers         : ARRAY[0..50] OF typeRegister;
+   nbRegisters       : sint;  
+   readRegister      :  typeRegister;
+  
+   cr : ARRAY[0..50] OF confRegister;
+   nbCr : sint;
+   
+   crcTable : ARRAY [0..511] OF INT := 16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#1,16#C0,16#80,16#41,16#1,16#C0,16#80,16#41,16#0,16#C1,16#81,16#40,16#0,16#C0,16#C1,16#1,16#C3,16#3,16#2,16#C2,16#C6,16#6,16#7,16#C7,16#5,16#C5,16#C4,16#4,16#CC,16#C,16#D,16#CD,16#F,16#CF,16#CE,16#E,16#A,16#CA,16#CB,16#B,16#C9,16#9,16#8,16#C8,16#D8,16#18,16#19,16#D9,16#1B,16#DB,16#DA,16#1A,16#1E,16#DE,16#DF,16#1F,16#DD,16#1D,16#1C,16#DC,16#14,16#D4,16#D5,16#15,16#D7,16#17,16#16,16#D6,16#D2,16#12,16#13,16#D3,16#11,16#D1,16#D0,16#10,16#F0,16#30,16#31,16#F1,16#33,16#F3,16#F2,16#32,16#36,16#F6,16#F7,16#37,16#F5,16#35,16#34,16#F4,16#3C,16#FC,16#FD,16#3D,16#FF,16#3F,16#3E,16#FE,16#FA,16#3A,16#3B,16#FB,16#39,16#F9,16#F8,16#38,16#28,16#E8,16#E9,16#29,16#EB,16#2B,16#2A,16#EA,16#EE,16#2E,16#2F,16#EF,16#2D,16#ED,16#EC,16#2C,16#E4,16#24,16#25,16#E5,16#27,16#E7,16#E6,16#26,16#22,16#E2,16#E3,16#23,16#E1,16#21,16#20,16#E0,16#A0,16#60,16#61,16#A1,16#63,16#A3,16#A2,16#62,16#66,16#A6,16#A7,16#67,16#A5,16#65,16#64,16#A4,16#6C,16#AC,16#AD,16#6D,16#AF,16#6F,16#6E,16#AE,16#AA,16#6A,16#6B,16#AB,16#69,16#A9,16#A8,16#68,16#78,16#B8,16#B9,16#79,16#BB,16#7B,16#7A,16#BA,16#BE,16#7E,16#7F,16#BF,16#7D,16#BD,16#BC,16#7C,16#B4,16#74,16#75,16#B5,16#77,16#B7,16#B6,16#76,16#72,16#B2,16#B3,16#73,16#B1,16#71,16#70,16#B0,16#50,16#90,16#91,16#51,16#93,16#53,16#52,16#92,16#96,16#56,16#57,16#97,16#55,16#95,16#94,16#54,16#9C,16#5C,16#5D,16#9D,16#5F,16#9F,16#9E,16#5E,16#5A,16#9A,16#9B,16#5B,16#99,16#59,16#58,16#98,16#88,16#48,16#49,16#89,16#4B,16#8B,16#8A,16#4A,16#4E,16#8E,16#8F,16#4F,16#8D,16#4D,16#4C,16#8C,16#44,16#84,16#85,16#45,16#87,16#47,16#46,16#86,16#82,16#42,16#43,16#83,16#41,16#81,16#80,16#40;
+   
+END_VAR;
+ 
+FUNCTION configConfRegisters;
+
+   nbCr := 0;      
+   cr[nbCr].Tag := "0660_04"; cr[nbCr].Reg := 16#0660; cr[nbCr].Length := 16#04;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "3800_0C"; cr[nbCr].Reg := 16#3800; cr[nbCr].Length := 16#0C;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "3000_0C"; cr[nbCr].Reg := 16#3000; cr[nbCr].Length := 16#0C;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0000_A9_0"; cr[nbCr].Reg := 16#0000; cr[nbCr].Length := 16#20;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0000_A9_1"; cr[nbCr].Reg := 16#0020; cr[nbCr].Length := 16#20;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0000_A9_2"; cr[nbCr].Reg := 16#0040; cr[nbCr].Length := 16#20;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0000_A9_3"; cr[nbCr].Reg := 16#0060; cr[nbCr].Length := 16#20;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0000_A9_4"; cr[nbCr].Reg := 16#0080; cr[nbCr].Length := 16#20;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0000_A9_5"; cr[nbCr].Reg := 16#00A0; cr[nbCr].Length := 16#09;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0AC4_A9_0"; cr[nbCr].Reg := 16#0AC4; cr[nbCr].Length := 16#21;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0AC4_A9_1"; cr[nbCr].Reg := 16#0AC4+16#21; cr[nbCr].Length := 16#21;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0AC4_A9_2"; cr[nbCr].Reg := 16#0AC4+16#21*2; cr[nbCr].Length := 16#21;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0AC4_A9_3"; cr[nbCr].Reg := 16#0AC4+16#21*3; cr[nbCr].Length := 16#21;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0AC4_A9_4"; cr[nbCr].Reg := 16#0AC4+16#21*4; cr[nbCr].Length := 16#20;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0AC4_A9_5"; cr[nbCr].Reg := 16#0AC4+16#21*4+16#20; cr[nbCr].Length := 16#05;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "7FF0_0C"; cr[nbCr].Reg := 16#7FF0; cr[nbCr].Length := 16#0C;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "2000_0C"; cr[nbCr].Reg := 16#2000; cr[nbCr].Length := 16#0C;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "1000_0C"; cr[nbCr].Reg := 16#1000; cr[nbCr].Length := 16#0C;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0EE0_10"; cr[nbCr].Reg := 16#0EE0; cr[nbCr].Length := 16#10;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0F00_46_0"; cr[nbCr].Reg := 16#0F00; cr[nbCr].Length := 16#20;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0F00_46_1"; cr[nbCr].Reg := 16#0F20; cr[nbCr].Length := 16#20;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0F00_46_2"; cr[nbCr].Reg := 16#0F40; cr[nbCr].Length := 16#06;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0D0C_60_0"; cr[nbCr].Reg := 16#0D0C; cr[nbCr].Length := 16#20;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0D0C_60_1"; cr[nbCr].Reg := 16#0D2C; cr[nbCr].Length := 16#20;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0D0C_60_2"; cr[nbCr].Reg := 16#0D4C; cr[nbCr].Length := 16#20;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0E64_15"; cr[nbCr].Reg := 16#0E64; cr[nbCr].Length := 16#15;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "011A_06"; cr[nbCr].Reg := 16#011A; cr[nbCr].Length := 16#06;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0DF2_30_0"; cr[nbCr].Reg := 16#0DF2; cr[nbCr].Length := 16#20;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0DF2_30_1"; cr[nbCr].Reg := 16#0DF2+16#20; cr[nbCr].Length := 16#10;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0DBE_2E_0"; cr[nbCr].Reg := 16#0DBE; cr[nbCr].Length := 16#20;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0DBE_2E_1"; cr[nbCr].Reg := 16#0DBE+16#20; cr[nbCr].Length := 16#0E;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "00CA_2D_0"; cr[nbCr].Reg := 16#00CA; cr[nbCr].Length := 16#20;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "00CA_2D_1"; cr[nbCr].Reg := 16#00CA+16#20; cr[nbCr].Length := 16#0D;nbCr:=nbCr +1;
+   cr[nbCr].Tag := "0D84_02"; cr[nbCr].Reg := 16#0D84; cr[nbCr].Length := 16#02;nbCr:=nbCr +1;
+     
+   DebugFmt(message := "NConfRegisters =  \1", v1:=nbCr);  
+
+END_FUNCTION 
+ 
+FUNCTION configRegisters;
+
+//   4 : INTREAL      8  byte (4 byte long represent the integer part and 4 byte float represent the fractional part)
+//   3 : REAL32       4  byte (single)
+/*   "Volume corrected"  // 0xC3400068,   // 42   VolCorr              m3                      Vol. corrected                                      0           99999999
+   "Volume converted"  // 0xC3400070,   // 43   VolConv              Nm3       U             Vol. converted                                      0           99999999
+   "Vol conv 1", 0x83200070,   // 46   VolConvI             Nm3       U        1 01 Vol. conv.                                                                  Vol. conv.
+   "Vol conv dec", 0xC3300074,   // 47   VolConvF             Nm3       U        1 0  Vol. conv. dec.                                                             
+   "Flow rate"  //0x273000A0,   // 133  FlowUnCorr           m3/h               1R0 1Flow measured      
+   "Flow conv"  //0x2730007C,   // 41   FlowConv             Nm3/h     U        1R0 1Flow conv.     
+   "Flow corrected"  // 0x27300078,   // 40   FlowCorr             m3/h               1R0 1Flow corrected                                                              Flow corr.
+   "Pressure"  //0x47300080,   // 36   Pressure             bar A     U        1R0 1Pressure                                                                    Pressure
+   "Pressure bar A", 0xDA300118,//202 258  TZTryk               bar A     UR            Pressure [bar A]                                    0.6         80
+   "Temperature"  //0x27300084,   // 37   Temperature          °C                 1R0 1Temperature                                                                 Temperature
+   "Conversion factor"  //0x57300088,   // 38   Korr                                    1R0 1Conversion factor                                                           Conv. factor
+   "Energy"  //0xC3400090,   // 95   Energi               MJ        U             Energy                                              0           99999999
+   "Volume measured"  //0xC3400098,   // 108  VolMeasured          m3                      Volume measured                                     0           99999999
+   "Vol measured 1", 0x83200098,   // 190  VolMeasuredI         m3                 1 01 Vol. measured                                                               Vol. meas.
+   "Vol measured dec", 0xC330009C,   // 191  VolMeasuredF         m3                 1 0  Vol. measured dec.                                                          
+   "Value of pulse"  //0xDB3000F8,   // 39   Pulsvalue            m3/pulse  UR       1    Value of pulse                                      0           99999999    Pulse Value
+   "Pressure low limit"  //0x493000FC,   // 50   TrykMin              BarA      UR       1    Pressure low limit                                  0.6         80          Press. low limit
+   "Pressure high limit"  //0x49300100,   // 51   TrykMax              BarA      UR       1    Pressure high limit                                 0.6         80          Press. high limit
+   "Temperature low limit"  //0x29300104,   // 52   TempMin              °C         R       1    Temperature low limit                               -40         70          Temp. low limit
+   "Temperature high limit"  //0x29300108,   // 53   TempMax              °C         R       1    Temperature high limit                              -40         70          Temp. high limit
+   "Flow high limit"  //0x2930010C,   // 54   FlowCorrMax          m3/h       R       1    Flow high limit                                     0           99999999    Flow high limit
+   "Conv flow high limit"  //0x29300110,   // 55   FlowConvMax          Nm3/h     UR       1    Conv. flow high limit                               0           99999999    Conv. flow high limit
+   "Power high limit"  //0x29300114,   // 56   EnergiMax            MJ/h      UR       1    Power high limit
+   "Average power"  //0x23300200,   // 6    IEnergyFAvg          MJ        U0        R1  Average power.
+   "Average temp"  //0x23300204,   // 7    ITempAvg             °C         0        R1  Average temp.
+   "Average press"  //0x43300208,   // 8    ITrykAvg             BarA      U0        R1  Average Press.
+   "Average flow corr"  //0x2330020C,   // 9    IFlowUAvg            m3/h       0        R1  Avg. flow corr.
+   "Average flow conv"  //0x23300210,   // 10   IFlowKAvg            Nm3/h     U0        R1  Avg. flow conv.
+   "Min temp", 0x23300040,   // 178  DTempMin             °C         0        R2  Min. temp.
+   "Max temp", 0x23300044,   // 179  DTempMax             °C         0        R2  Max. temp.
+   "Min Press", 0x43300048,   // 180  DTrykMin             BarA      U0        R2  Min. Press.
+   "Max Press", 0x4330004C,   // 181  DTrykMax             BarA      U0        R2  Max. Press.
+   "Min temp 1", 0x23300020,   // 170  ITempMin             °C         0        R1  Min. temp.
+   "Max temp 1", 0x23300024,   // 171  ITempMax             °C         0        R1  Max. temp.
+   "Min Press 1", 0x43300028,   // 172  ITrykMin             BarA      U0        R1  Min. Press.
+   "Max Press 1", 0x4330002C,   // 173  ITrykMax             BarA      U0        R1  Max. Press.
+   "Min flow conv", 0x23300038,   // 176  IFlowKMin            Nm3/h     U0        R1  Min. flow conv.
+   "Max flow conv", 0x2330003C,   // 177  IFlowKMax            Nm3/h     U0        R1  Max. flow conv.
+   "Min flow conv 1", 0x23300058,   // 184  DFlowKMin            Nm3/h     U0        R2  Min. flow conv.
+   "Max flow conv 1", 0x2330005C,   // 185  DFlowKMax            Nm3/h     U0        R2  Max. flow conv.
+"Alarm active 1_32"  //0x07F00234,   // 101  Alarm active 1-32                        R0  Alarm active 1-32
+"Alarm active 33_64"  //0x07F00238,   // 102  Alarm active 33-64                       R0  Alarm active 33-64
+"Alarm active 64_96"  //0x07F0023C,   // 103  Alarm active 64-96                       R0  Alarm active 64-96
+*/   
+
+   
+   
+   nbRegisters :=0;
+   DebugFmt(message := "Config Registers ");
+   
+//0x070000D6,   // 31   Password                                 R   Actual secure level
+  strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Actual secure level", len:=strLen(str:="Actual secure level"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:=" ", len:=strLen(str:=" "));  
+   registers[nbRegisters].Address := 16#D6/2;   
+   registers[nbRegisters].Type := CST_TYPE_UINT8;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_30_MN;
+   registers[nbRegisters].Length := 1;
+   registers[nbRegisters].lower := 0;
+   registers[nbRegisters].upper := 3;
+   registers[nbRegisters].ratio := 1.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+// 0xC3400068,   // 42   VolCorr              m3                      Vol. corrected                                      0           99999999
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Volume corrected", len:=strLen(str:="Volume corrected"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="m3", len:=strLen(str:="m3"));  
+   registers[nbRegisters].Address := 16#68/2;   
+   registers[nbRegisters].Type := CST_TYPE_INTREAL;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_30_MN;
+   registers[nbRegisters].Length := 4;
+   registers[nbRegisters].lower := 10;
+   registers[nbRegisters].upper := 100;
+   registers[nbRegisters].ratio := 10000.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+// 0xC3400070,   // 43   VolConv              Nm3       U             Vol. converted                                      0           99999999
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Volume converted", len:=strLen(str:="Volume converted"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="Nm3", len:=strLen(str:="Nm3"));  
+   registers[nbRegisters].Address := 16#70/2;   
+   registers[nbRegisters].Type := CST_TYPE_INTREAL;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_30_MN;
+   registers[nbRegisters].Length := 4;
+   registers[nbRegisters].lower := 10;
+   registers[nbRegisters].upper := 100;
+   registers[nbRegisters].ratio := 10000.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+ 
+//0x273000A0,   // 133  FlowUnCorr           m3/h               1R0 1Flow measured      
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Flow rate", len:=strLen(str:="Flow rate"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="m3/h", len:=strLen(str:="m3/h"));  
+   registers[nbRegisters].Address := 16#A0/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_30_MN;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//0x2730007C,   // 41   FlowConv             Nm3/h     U        1R0 1Flow conv.     
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Flow conv", len:=strLen(str:="Flow conv"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="Nm3/h", len:=strLen(str:="Nm3/h"));  
+   registers[nbRegisters].Address := 16#7C/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_30_MN;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+// 0x27300078,   // 40   FlowCorr             m3/h               1R0 1Flow corrected                                                              Flow corr.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Flow corrected", len:=strLen(str:="Flow corrected"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="m3/h", len:=strLen(str:="m3/h"));  
+   registers[nbRegisters].Address := 16#78/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_30_MN;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//0x47300080,   // 36   Pressure             bar A     U        1R0 1Pressure                                                                    Pressure
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Pressure", len:=strLen(str:="Pressure"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="barA", len:=strLen(str:="barA"));  
+   registers[nbRegisters].Address := 16#80/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_MN;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 10000.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//0x27300084,   // 37   Temperature          °C                 1R0 1Temperature                                                                 Temperature
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Temperature", len:=strLen(str:="Temperature"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="C", len:=strLen(str:="C"));  
+   registers[nbRegisters].Address := 16#84/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_30_MN;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 1800;
+   registers[nbRegisters].upper := 2500;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//0x57300088,   // 38   Korr                                    1R0 1Conversion factor                                                           Conv. factor
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Conversion factor", len:=strLen(str:="Conversion factor"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:=" ", len:=strLen(str:=" "));  
+   registers[nbRegisters].Address := 16#88/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_30_MN;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 10;
+   registers[nbRegisters].upper := 100;
+   registers[nbRegisters].ratio := 100000.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+//0xC3400090,   // 95   Energi               MJ        U             Energy                                              0           99999999
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Energy", len:=strLen(str:="Energy"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="MJ", len:=strLen(str:="MJ"));  
+   registers[nbRegisters].Address := 16#90/2;   
+   registers[nbRegisters].Type := CST_TYPE_INTREAL;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 4;
+   registers[nbRegisters].lower := 50;
+   registers[nbRegisters].upper := 100;
+   registers[nbRegisters].ratio := 10000.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+//0xC3400098,   // 108  VolMeasured          m3                      Volume measured                                     0           99999999
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Volume measured", len:=strLen(str:="Volume measured"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="m3", len:=strLen(str:="m3"));  
+   registers[nbRegisters].Address := 16#98/2;   
+   registers[nbRegisters].Type := CST_TYPE_INTREAL;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_30_MN;
+   registers[nbRegisters].Length := 4;
+   registers[nbRegisters].lower := 10;
+   registers[nbRegisters].upper := 100;
+   registers[nbRegisters].ratio := 10000.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+//0xDB3000F8,   // 39   Pulsvalue            m3/pulse  UR       1    Value of pulse                                      0           99999999    Pulse Value
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Value of pulse", len:=strLen(str:="Value of pulse"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="m3/pulse", len:=strLen(str:="m3/pulse"));  
+   registers[nbRegisters].Address := 16#F8/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100000.0;  
+   DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));
+   nbRegisters := nbRegisters + 1;
+   
+//0x493000FC,   // 50   TrykMin              BarA      UR       1    Pressure low limit                                  0.6         80          Press. low limit
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Pressure low limit", len:=strLen(str:="Pressure low limit"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="BarA", len:=strLen(str:="BarA"));  
+   registers[nbRegisters].Address := 16#FC/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 1;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 10000.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+//0x49300100,   // 51   TrykMax              BarA      UR       1    Pressure high limit                                 0.6         80          Press. high limit
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Pressure high limit", len:=strLen(str:="Pressure high limit"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="BarA", len:=strLen(str:="BarA"));  
+   registers[nbRegisters].Address := 16#100/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 1;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 1000.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+//0x29300104,   // 52   TempMin              °C         R       1    Temperature low limit                               -40         70          Temp. low limit
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Temperature low limit", len:=strLen(str:="Temperature low limit"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="C ", len:=strLen(str:="C"));  
+   registers[nbRegisters].Address := 16#104/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+//0x29300108,   // 53   TempMax              °C         R       1    Temperature high limit                              -40         70          Temp. high limit
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Temperature high limit", len:=strLen(str:="Temperature high limit"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="C ", len:=strLen(str:="C "));  
+   registers[nbRegisters].Address := 16#108/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+//0x2930010C,   // 54   FlowCorrMax          m3/h       R       1    Flow high limit                                     0           99999999    Flow high limit
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Flow high limit", len:=strLen(str:="Flow high limit"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="m3/h", len:=strLen(str:="m3/h"));  
+   registers[nbRegisters].Address := 16#10C/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+//0x29300110,   // 55   FlowConvMax          Nm3/h     UR       1    Conv. flow high limit                               0           99999999    Conv. flow high limit
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Conv flow high limit", len:=strLen(str:="Conv flow high limit"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="Nm3/h", len:=strLen(str:="Nm3/h"));  
+   registers[nbRegisters].Address := 16#110/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+//0x29300114,   // 56   EnergiMax            MJ/h      UR       1    Power high limit
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Power high limit", len:=strLen(str:="Power high limit"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="MJ/h", len:=strLen(str:="MJ/h"));  
+   registers[nbRegisters].Address := 16#114/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+//0x23300200,   // 6    IEnergyFAvg          MJ        U0        R1  Average power.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Average power", len:=strLen(str:="Average power"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="MJ", len:=strLen(str:="m3/h"));  
+   registers[nbRegisters].Address := 16#200/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+//0x23300204,   // 7    ITempAvg             °C         0        R1  Average temp.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Average temperature", len:=strLen(str:="Average temperature"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="C", len:=strLen(str:="C"));  
+   registers[nbRegisters].Address := 16#204/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//   "Min temp", 0x23300040,   // 178  DTempMin             °C         0        R2  Min. temp.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Min temp", len:=strLen(str:="Min temp"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="C", len:=strLen(str:="C"));  
+   registers[nbRegisters].Address := 16#040/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//   "Max temp", 0x23300044,   // 179  DTempMax             °C         0        R2  Max. temp.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Max temp", len:=strLen(str:="Max temp"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="C", len:=strLen(str:="C"));  
+   registers[nbRegisters].Address := 16#044/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//   "Min Press", 0x43300048,   // 180  DTrykMin             BarA      U0        R2  Min. Press.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Min Press", len:=strLen(str:="Min Press"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="C", len:=strLen(str:="C"));  
+   registers[nbRegisters].Address := 16#048/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//   "Max Press", 0x4330004C,   // 181  DTrykMax             BarA      U0        R2  Max. Press.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Max Press", len:=strLen(str:="Max Press"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="C", len:=strLen(str:="C"));  
+   registers[nbRegisters].Address := 16#04C/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//   "Min temp 1", 0x23300020,   // 170  ITempMin             °C         0        R1  Min. temp.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Min temp 1", len:=strLen(str:="Min temp 1"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="C", len:=strLen(str:="C"));  
+   registers[nbRegisters].Address := 16#020/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//   "Max temp 1", 0x23300024,   // 171  ITempMax             °C         0        R1  Max. temp.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Max temp 1", len:=strLen(str:="max temp 1"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="C", len:=strLen(str:="C"));  
+   registers[nbRegisters].Address := 16#024/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//  "Min Press 1", 0x43300028,   // 172  ITrykMin             BarA      U0        R1  Min. Press.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Min Press 1", len:=strLen(str:="Min Press 1"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="C", len:=strLen(str:="C"));  
+   registers[nbRegisters].Address := 16#028/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//   "Max Press 1", 0x4330002C,   // 173  ITrykMax             BarA      U0        R1  Max. Press.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Max Press 1", len:=strLen(str:="Max Press 1"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="C", len:=strLen(str:="C"));  
+   registers[nbRegisters].Address := 16#02C/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//   "Min flow conv", 0x23300038,   // 176  IFlowKMin            Nm3/h     U0        R1  Min. flow conv.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Min flow conv", len:=strLen(str:="Min flow conv"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="C", len:=strLen(str:="C"));  
+   registers[nbRegisters].Address := 16#038/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//   "Max flow conv", 0x2330003C,   // 177  IFlowKMax            Nm3/h     U0        R1  Max. flow conv.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Max flow conv", len:=strLen(str:="Max flow conv"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="C", len:=strLen(str:="C"));  
+   registers[nbRegisters].Address := 16#03C/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//   "Min flow conv 1", 0x23300058,   // 184  DFlowKMin            Nm3/h     U0        R2  Min. flow conv.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Min flow conv 1", len:=strLen(str:="Min flow conv 1"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="C", len:=strLen(str:="C"));  
+   registers[nbRegisters].Address := 16#058/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//   "Max flow conv 1", 0x2330005C,   // 185  DFlowKMax            Nm3/h     U0        R2  Max. flow conv.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="TMax flow conv 1", len:=strLen(str:="Max flow conv 1"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="C", len:=strLen(str:="C"));  
+   registers[nbRegisters].Address := 16#05C/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+//   "Vol conv 1", 0x83200070,   // 46   VolConvI             Nm3       U        1 01 Vol. conv.                                                                  Vol. conv.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Vol conv 1", len:=strLen(str:="Vol conv 1"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="BarA", len:=strLen(str:="BarA"));  
+   registers[nbRegisters].Address := 16#070/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 10000.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//   "Vol conv dec", 0xC3300074,   // 47   VolConvF             Nm3       U        1 0  Vol. conv. dec.                                                             
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Vol conv dec", len:=strLen(str:="Vol conv dec"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="BarA", len:=strLen(str:="BarA"));  
+   registers[nbRegisters].Address := 16#074/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 10000.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//   "Vol measured 1", 0x83200098,   // 190  VolMeasuredI         m3                 1 01 Vol. measured                                                               Vol. meas.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Vol measured 1", len:=strLen(str:="Vol measured 1"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="BarA", len:=strLen(str:="BarA"));  
+   registers[nbRegisters].Address := 16#098/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 10000.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//   "Vol measured dec", 0xC330009C,   // 191  VolMeasuredF         m3                 1 0  Vol. measured dec.                                                          
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Vol measured dec", len:=strLen(str:="Vol measured dec"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="BarA", len:=strLen(str:="BarA"));  
+   registers[nbRegisters].Address := 16#09C/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 10000.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//0x43300208,   // 8    ITrykAvg             BarA      U0        R1  Average Press.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Average pressure", len:=strLen(str:="Average pressure"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="BarA", len:=strLen(str:="BarA"));  
+   registers[nbRegisters].Address := 16#208/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 10000.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+//0x2330020C,   // 9    IFlowUAvg            m3/h       0        R1  Avg. flow corr.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Average flow corr", len:=strLen(str:="Average flow corr"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="m3/h", len:=strLen(str:="m3/h"));  
+   registers[nbRegisters].Address := 16#20C/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+//0x23300210,   // 10   IFlowKAvg            Nm3/h     U0        R1  Avg. flow conv.
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Average flow conv", len:=strLen(str:="Average flow conv"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:="Nm3/h", len:=strLen(str:="Nm3/h"));  
+   registers[nbRegisters].Address := 16#210/2;   
+   registers[nbRegisters].Type := CST_TYPE_REAL32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 100;
+   registers[nbRegisters].upper := 1000;
+   registers[nbRegisters].ratio := 100.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+// Alarm
+//0x07F00234,   // 101  Alarm active 1-32                        R0  Alarm active 1-32
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Alarm active 1_32", len:=strLen(str:="Alarm active 1_32"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:=" ", len:=strLen(str:=" "));  
+   registers[nbRegisters].Address := 16#234/2;   
+   registers[nbRegisters].Type := CST_TYPE_UINT32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 10;
+   registers[nbRegisters].upper := 100;
+   registers[nbRegisters].ratio := 1.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+//0x07F00238,   // 102  Alarm active 33-64                       R0  Alarm active 33-64
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Alarm active 33_64", len:=strLen(str:="Alarm active 33_64"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:=" ", len:=strLen(str:=" "));  
+   registers[nbRegisters].Address := 16#238/2;   
+   registers[nbRegisters].Type := CST_TYPE_UINT32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 10;
+   registers[nbRegisters].upper := 100;
+   registers[nbRegisters].ratio := 1.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+   
+//0x07F0023C,   // 103  Alarm active 64-96                       R0  Alarm active 64-96
+   strToMemory(dst:=ADDR(registers[nbRegisters].Name), str:="Alarm active 64_96", len:=strLen(str:="Alarm active 64_96"));  
+   strToMemory(dst:=ADDR(registers[nbRegisters].Unit), str:=" ", len:=strLen(str:=" "));  
+   registers[nbRegisters].Address := 16#23C/2;   
+   registers[nbRegisters].Type := CST_TYPE_UINT32;
+   registers[nbRegisters].ScanClass := CST_SCANCLASS_1_HR;
+   registers[nbRegisters].Length := 2;
+   registers[nbRegisters].lower := 10;
+   registers[nbRegisters].upper := 100;
+   registers[nbRegisters].ratio := 1.0;  
+   if DEBUG_REGISTER>0 THEN DebugFmt(message := "Add " + strFromMemory(src:=ADDR(registers[nbRegisters].Name), len:=SIZEOF(registers[nbRegisters].Name)));END_IF;
+   nbRegisters := nbRegisters + 1;
+
+
+   DebugFmt(message := "NRegisters =  \1", v1:=nbRegisters);
+
+END_FUNCTION;
+ 
+FUNCTION getINTREAL;
+
+VAR_INPUT
+   dest : PTR;
+   b0 : sint;
+   b1 : sint;
+   b2 : sint;
+   b3 : sint;
+   b4 : sint;
+   b5 : sint;
+   b6 : sint;
+   b7 : sint;
+END_VAR;
+VAR
+   integer : dint;
+   fractionnal : float;
+   real : float;
+   
+END_VAR;   
+   getDINT(dest:=ADDR(integer), b0:=b0, b1:= b1, b2:= b2, b3:=b3);
+   getFloat(dest:=ADDR(fractionnal), b3:=b7, b2:= b6, b1:=b5, b0:= b4);
+   
+   
+   real := float(integer)+fractionnal;
+   memcpy(dst := dest , src := ADDR(real) , len := 4);
+  
+END_FUNCTION;
+
+
+FUNCTION crc2Modbus : INT;
+VAR_INPUT
+  
+  length   : INT;
+  adr : PTR;
+  debug       : sint := 0;
+END_VAR;
+VAR
+   i : sint;
+   j : int;
+   k : int;
+   v : sint;
+   crc1ow : int;
+   crchigh : int;
+END_VAR;
+crc1ow := 16#FF;
+crchigh := 16#FF;
+for i := 0 to length-1 do
+   memcpy(dst:=ADDR(v), src:=adr+i, len:=1);
+   k:=int(v);
+   if k<0 then
+      k:= int(128) + (k and 16#7F) ;
+   END_IF;
+   j := ( crchigh XOR k ) AND 16#FF;;
+   if debug > 0 then
+      DebugMsg (message := "  ModbusCRC k= "+  intToStr(v:=k) + " v= "+  sintToStr(v:=v) +",j = " + intToStr(v:=j) + ", crchigh= "+  intToStr(v:=crchigh) +",crc1ow = " + intToStr(v:=crc1ow));
+   END_IF;
+   
+   crchigh := (crc1ow XOR crcTable[j]) AND 16#FF;
+   crc1ow :=  crcTable[j+256] AND 16#FF;
+   
+END_FOR;
+if debug > 0 then
+      DebugMsg (message := "  ModbusCRC crchigh= "+  intToStr(v:=crchigh) +",crc1ow = " + intToStr(v:=crc1ow));
+END_IF;
+crc2Modbus := shl16(in:=crchigh, n:=8) OR int(crc1ow);
+END_FUNCTION;
+
+FUNCTION_BLOCK serialModbusHoldingRegisters
+VAR_INPUT
+   portNum : SINT;
+   unit_id : INT;
+   Register   : INT;
+   length : INT;
+   typeFunct   : sint := 16#3;
+   debug       : sint := 0;
+END_VAR;
+VAR_OUTPUT
+   status : INT;
+   size   : INT;
+   buf   : ARRAY[0..253] OF SINT;
+END_VAR;
+VAR
+   rc, i : INT;
+   CRC16 : INT;
+   mask   : SINT;
+   timeout : DINT;
+   waitedSize : DINT;
+   strFrame : STRING;
+   timeoutDelay : DINT;
+END_VAR;
+   
+   #IFDEF NOT CST_SIMUL THEN  
+      timeoutDelay := 5;
+   #ELSE
+      timeoutDelay := -1;
+   #END_IF
+
+  // Check length
+   IF length < 1 OR length > 50 THEN
+      status := CST_MODBUS_STATUS_1_WRONG_QUERY_LENGTH;
+      RETURN;
+   END_IF;
+   IF Register < 0 THEN
+      status := CST_MODBUS_STATUS_2_WRONG_REGISTER;
+      RETURN;
+   END_IF;
+ 
+   // prepare sending
+   waitedSize := length*2+5;
+   
+   // Build command
+   buf[0] := sint(unit_id);
+   buf[1] := typeFunct;
+   setINT(adr := ADDR(buf[2]), v := Register);
+   setINT(adr := ADDR(buf[4]), v := length);
+   // Calculate CRC
+   CRC16 := crc2Modbus(adr:=ADDR(buf), length:=6) ;
+   setINT(adr := ADDR(buf[6]), v := CRC16);
+   
+ 
+   if debug > 0 then
+      strFrame := "";
+      for i:=0 to 7 DO
+         strFrame := strFrame + "[" + SintToHex(v:=buf[i]) + "]";
+      END_FOR;
+      DebugMsg (message := "  <-- SEND Trame = " + strFrame);
+   END_IF;
+   serFlush(port:=portNum);
+   if portNum=0 THEN
+      rx1Buffer[waitedSize-1]:=16#00;
+   else
+      rx2Buffer[waitedSize-1]:=16#00;
+   end_if;
+   serSendData(port:=portNum, data:=ADDR(buf), size:=8);
+   if debug   > 0 then
+      DebugMsg (message := "  <-- Waiting frame length = " + dintToStr(v:=waitedSize) +", last byte = "+ sintToStr(v:=rx2Buffer[waitedSize]) );
+   end_if;
+      
+   timeout := clockNow() + timeoutDelay;
+   
+   REPEAT 
+      if portNum=0 THEN
+         ser1Rec();
+      else
+         ser2Rec();
+      end_if;
+   until timeout<clockNow() or (portNum=0 and rx1Buffer[waitedSize-1]<>16#00) or  (portNum=1 and rx2Buffer[waitedSize-1]<>16#00) END_REPEAT;
+   serForceDataReady(port:=portNum);
+   
+   //***************** Copy Frame to buf
+   if portNum=0 THEN
+      memcpy(dst:=ADDR(buf),src:=ADDR(rx1Buffer),len:=int(waitedSize));
+      size := ser1Rec.size;
+   else
+      memcpy(dst:=ADDR(buf),src:=ADDR(rx2Buffer),len:=int(waitedSize));
+      size := ser2Rec.size;
+   end_if;
+   serFrameReceiveDone(port:=portNum);
+   
+   //***************** Display Frame
+   if debug  > 0 then
+      DebugMsg (message := "  --> Received Trame Length = " + intToStr(v:=size) +", last byte = "+ sintToStr(v:=buf[waitedSize-1]) );   
+      strFrame := "";
+      for i:=0 to waitedSize-1 DO
+         strFrame := strFrame + "[" + SintToHex(v:=buf[i]) + "]";
+         if strLen(str:=strFrame)>200 THEN
+            EXIT;
+         END_IF;;
+      END_FOR;
+      DebugMsg (message := "  --> Trame = " + strFrame);
+   end_if;
+   
+   //***************** Verif timeout
+  if size=0 or buf[waitedSize-1]=16#00 THEN
+     if debug  > 0 then DebugMsg (message := "  == Timeout");end_if;
+     status := CST_MODBUS_STATUS_4_TIMEOUT;
+     return;
+  END_IF;
+
+   //***************** Verif size
+  if size<waitedSize THEN
+     if debug  > 0 then DebugMsg (message := "  == Answer too short");end_if;
+     status := CST_MODBUS_STATUS_5_WRONG_ANSWER_SIZE;
+     return;
+  END_IF;
+
+
+   //***************** Verif unit_id
+  IF buf[0] <> unit_id THEN
+     if debug  > 0 then DebugMsg (message := "  == Wrong unit_id return");end_if;
+     status := CST_MODBUS_STATUS_6_WRONG_ANSWER_ID;
+    RETURN;
+  END_IF;
+  
+  //***************** Verif function
+  IF buf[1] <> typeFunct THEN
+     if debug  > 0 then DebugMsg (message := "  == Wrong function return");end_if;
+     status := CST_MODBUS_STATUS_7_WRONG_ANSWER_FUNCTION;
+    RETURN;
+  END_IF;
+   
+ 
+  //***************** Answer is ok
+  if debug  > 0 then
+      DebugMsg (message := "  == Answer ok");
+  end_if;
+  status := CST_MODBUS_STATUS_0_OK;
+
+END_FUNCTION_BLOCK;
+
+FUNCTION_BLOCK serialModbusWriteHoldingRegisters
+VAR_INPUT
+   portNum : SINT;
+   unit_id : INT;
+   Register   : INT;
+   length : INT;
+   ptrValues   : PTR;
+   type : SINT := 0;
+   typeFunct   : sint := 16#10;
+   debug       : sint := 0;
+END_VAR;
+VAR_OUTPUT
+   status : INT;
+   size   : INT;
+   buf   : ARRAY[0..253] OF SINT;
+END_VAR;
+VAR
+   rc, i : INT;
+   CRC16 : INT;
+   mask   : SINT;
+   timeout : DINT;
+   waitedSize : DINT;
+   strFrame : STRING;
+   timeoutDelay : DINT;
+   writeReg   : ARRAY[0..50] OF INT;
+END_VAR;
+   
+   memcpy(dst:=ADDR(writeReg),src:=ptrValues,len:=100);
+   for i:=0 to 100 DO
+      buf[i]:=0;
+   END_FOR;
+   #IFDEF NOT CST_SIMUL THEN  
+      timeoutDelay := 5;
+   #ELSE
+      timeoutDelay := -1;
+   #END_IF
+
+  // Check length
+   IF length < 1 OR length > 32 THEN
+      if debug > 0 then DebugFmt(message :="Wrong Length Reg[Length]  = \1[\2]",v1:=Register,v2:= length);END_IF;
+      status := CST_MODBUS_STATUS_1_WRONG_QUERY_LENGTH;
+      RETURN;
+   END_IF;
+   IF Register < 1 THEN
+      if debug > 0 then DebugFmt(message :="Wrong Reg Reg[Length]  = \1[\2]",v1:=Register,v2:= length);END_IF;
+      status := CST_MODBUS_STATUS_2_WRONG_REGISTER;
+      RETURN;
+   END_IF;
+ 
+   // prepare sending
+   waitedSize := 8;
+   
+   // Build command
+   buf[0] := sint(unit_id);
+   buf[1] := typeFunct;
+   setINT(adr := ADDR(buf[2]), v := Register);
+   setINT(adr := ADDR(buf[4]), v := length);
+   buf[6]:= sint(length)*2;
+   
+   if type=CST_TYPE_UINT16 THEN
+      for i:=0 to length-1 DO
+         if debug > 0 then DebugFmt(message :="Add register value \1 = \2",v1:=i,v2:= writeReg[i]);END_IF;
+         setINT(adr := ADDR(buf[7+i*2]), v := writeReg[i]);
+      END_FOR;
+   ELSif type=CST_TYPE_UINT32 THEN
+      for i:=0 to length-1 DO
+         if debug > 0 then DebugFmt(message :="Add register value \1 = \2",v1:=i,v2:= writeReg[i]);END_IF;
+         setINT(adr := ADDR(buf[7+i*4]), v := writeReg[i*2]);
+         setINT(adr := ADDR(buf[7+i*4+2]), v := writeReg[i*2+1]);
+      END_FOR;
+   ELSif type=CST_TYPE_REAL32 THEN
+      memcpy(dst:=ADDR(buf[7]),src:=ptrValues,len:=length*2);
+   ELSIF type=CST_TYPE_STR THEN
+      memcpy(dst:=ADDR(buf[7]),src:=ptrValues,len:=length*2);
+   ELSIF type=CST_TYPE_RAW THEN
+      memcpy(dst:=ADDR(buf[7]),src:=ptrValues,len:=length*2);
+   ELSE
+      status := CST_MODBUS_STATUS_3_WRONG_TYPE;
+      RETURN;
+   END_IF;
+      
+   // Calculate CRC
+   CRC16 := crc2Modbus(adr:=ADDR(buf), length:=7+length*2) ;
+   setINT(adr := ADDR(buf[7+length*2]), v := CRC16);
+   
+ 
+   if debug > 0 then
+      strFrame := "";
+      for i:=0 to 9+length*2-1 DO
+         strFrame := strFrame + "[" + SintToHex(v:=buf[i]) + "]";
+      END_FOR;
+      DebugMsg (message := "  <-- SEND Trame = " + strFrame);
+   END_IF;
+ 
+   
+   // Prepare rec buffer
+   serFlush(port:=portNum);
+   if portNum=0 THEN
+      rx1Buffer[waitedSize-1]:=16#00;
+   else
+      rx2Buffer[waitedSize-1]:=16#00;
+   end_if;
+   
+   // send query
+   serSendData(port:=portNum, data:=ADDR(buf), size:=9+length*2);
+   if debug   > 0 then
+      DebugMsg (message := "  <-- Waiting frame length = " + dintToStr(v:=waitedSize) +", last byte = "+ sintToStr(v:=rx2Buffer[waitedSize]) );
+   end_if;
+ 
+   timeout := clockNow() + timeoutDelay;
+   // wait answer
+   REPEAT 
+      if portNum=0 THEN
+         ser1Rec();
+      else
+         ser2Rec();
+      end_if;
+   until timeout<clockNow() or (portNum=0 and rx1Buffer[waitedSize-1]<>16#00) or  (portNum=1 and rx2Buffer[waitedSize-1]<>16#00) END_REPEAT;
+   serForceDataReady(port:=portNum);
+   
+   //***************** Copy Frame to buf
+   if portNum=0 THEN
+      memcpy(dst:=ADDR(buf),src:=ADDR(rx1Buffer),len:=int(waitedSize));
+      size := ser1Rec.size;
+   else
+      memcpy(dst:=ADDR(buf),src:=ADDR(rx2Buffer),len:=int(waitedSize));
+      size := ser2Rec.size;
+   end_if;
+   serFrameReceiveDone(port:=portNum);
+   
+   //***************** Display Frame
+   if debug  > 0 then
+      DebugMsg (message := "  --> Received Trame Length = " + intToStr(v:=size) +", last byte = "+ sintToStr(v:=buf[waitedSize-1]) );   
+      strFrame := "";
+      for i:=0 to waitedSize-1 DO
+         strFrame := strFrame + "[" + SintToHex(v:=buf[i]) + "]";
+      END_FOR;
+      DebugMsg (message := "  --> Trame = " + strFrame);
+   end_if;
+   
+   //***************** Verif timeout
+  if size=0 or buf[waitedSize-1]=16#00 THEN
+     if debug  > 0 then DebugMsg (message := "  == Timeout");end_if;
+     status := CST_MODBUS_STATUS_4_TIMEOUT;
+     return;
+  END_IF;
+
+   //***************** Verif size
+  if size<>waitedSize THEN
+     if debug  > 0 then DebugMsg (message := "  == Answer too short");end_if;
+     status := CST_MODBUS_STATUS_5_WRONG_ANSWER_SIZE;
+     return;
+  END_IF;
+
+
+   //***************** Verif unit_id
+  IF buf[0] <> unit_id THEN
+     if debug  > 0 then DebugMsg (message := "  == Wrong unit_id return");end_if;
+     status := CST_MODBUS_STATUS_6_WRONG_ANSWER_ID;
+    RETURN;
+  END_IF;
+  
+  //***************** Verif function
+  IF buf[1] <> typeFunct THEN
+     if debug  > 0 then DebugMsg (message := "  == Wrong function return");end_if;
+     status := CST_MODBUS_STATUS_7_WRONG_ANSWER_FUNCTION;
+    RETURN;
+  END_IF;
+   
+ 
+  //***************** Answer is ok
+  if debug  > 0 then
+      DebugMsg (message := "  == Answer ok");
+  end_if;
+  status := CST_MODBUS_STATUS_0_OK;
+
+END_FUNCTION_BLOCK;
+
+
+FUNCTION getTextStatus : String;
+VAR_INPUT
+   status : int;
+END_VAR; 
+   IF status=CST_MODBUS_STATUS_0_OK THEN
+      getTextStatus := "Answer ok";
+   ELSIF status=CST_MODBUS_STATUS_1_WRONG_QUERY_LENGTH THEN
+      getTextStatus := "Bad query length";
+   ELSIF status=CST_MODBUS_STATUS_2_WRONG_REGISTER THEN
+      getTextStatus := "Bad register";
+   ELSIF status=CST_MODBUS_STATUS_3_WRONG_TYPE THEN
+      getTextStatus := "Bad values Type";
+   ELSIF status=CST_MODBUS_STATUS_4_TIMEOUT THEN
+      getTextStatus := "TIMEOUT";
+   ELSIF status= CST_MODBUS_STATUS_5_WRONG_ANSWER_SIZE THEN
+      getTextStatus := "Answer too short";
+   ELSIF status= CST_MODBUS_STATUS_6_WRONG_ANSWER_ID THEN
+      getTextStatus := "Wrong unit_id return";
+   ELSIF status= CST_MODBUS_STATUS_7_WRONG_ANSWER_FUNCTION THEN
+      getTextStatus := "Wrong function return";
+      
+   ELSE 
+      getTextStatus := "UNKNOW";
+   END_IF;
+   
+END_FUNCTION;
+
+ 
+VAR
+   
+   serMBRead : serialModbusHoldingRegisters;
+   serMBWrite : serialModbusWriteHoldingRegisters;
+   
+END_VAR;
+
+
+
+FUNCTION getVersion;
+VAR_INPUT
+   port :  SINT;
+   
+END_VAR;
+   if NOT SIMUL THEN
+      serMBRead(portNum := port, unit_id := 1, Register := 16#EE8, length := 8, typeFunct := 16#3, debug := DEBUG_MODBUS);
+      if serMBRead.status<>0 THEN DebugFmt(message := "-status=\1", v1 := serMBRead.status); END_IF;
+      IF serMBRead.status = 0 THEN 
+         DebugMsg( message := strFromMemory(src:=ADDR(serMBRead.buf[3]), len:=6 ));
+         payloadMQTT := " { $"Uniflo Version$" :$"" + strFromMemory(src:=ADDR(serMBRead.buf[3]), len:=6)+"$" }";
+         storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=port) + "/"   , payload := payloadMQTT);
+      ELSE
+         DebugMsg(message := " no Uniflo connected");
+         payloadMQTT := " { $"Uniflo Version$" :$"not connected$" }";
+         storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=port) + "/"   , payload := payloadMQTT);
+      END_IF;
+      
+      //0x09601622,   // 122  Serienr                         R       1    Uniflo serial no.                                                           Serial no.
+      serMBRead(portNum := port, unit_id := 1, Register := 16#1622/2, length := 11, typeFunct := 16#3, debug := DEBUG_MODBUS);
+      if serMBRead.status<>0 THEN DebugFmt(message := "-status=\1", v1 := serMBRead.status); END_IF;
+      IF serMBRead.status = 0 THEN 
+         DebugMsg( message := strFromMemory(src:=ADDR(serMBRead.buf[3]), len:=6 ));
+         payloadMQTT := " { $"Uniflo Serial$" :$"" + strFromMemory(src:=ADDR(serMBRead.buf[3]), len:=8)+"$" }";
+         storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=port) + "/" , payload := payloadMQTT);
+      ELSE
+         payloadMQTT := " { $"Uniflo Serial$" :$"not connected$" }";
+         storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=port) + "/" , payload := payloadMQTT);
+      END_IF;
+      
+   ELSE
+      DebugMsg( message := "Version := 120026");
+      payloadMQTT := " { $"Uniflo Version$" :$"1200026$"}";
+      storeMQTT(topic := topicMQTT  + "serialPort" + sintToStr(v:=port) + "/" , payload := payloadMQTT);
+      payloadMQTT := " { $"Uniflo Serial$" :$"--SIMUL--$"}";
+      storeMQTT(topic := topicMQTT  + "serialPort" + sintToStr(v:=port) + "/" , payload := payloadMQTT);
+      
+//      payloadMQTT := " { $"testDate$" :"+dintToStr(v:=clockNow()+315532800)+"}";
+//      publishMQTT(topic := topicMQTT  , payload := payloadMQTT);
+   END_IF;
+      payloadMQTT := " { $"ICCID number$" :$""+gsmGetICCID()+"$"}";
+      storeMQTT(topic := topicMQTT  , payload := payloadMQTT);
+  
+END_FUNCTION;
+
+ 
+
+FUNCTION readConf;
+VAR_INPUT
+   port :  SINT;
+   debug : BOOL:=True;
+END_VAR;
+VAR
+   i : sint;
+END_VAR;
+      DebugMsg( message := "Read Conf Port : " + intToStr(v:=port));
+      for i:=0 TO nbCr-1 DO
+         serMBRead(portNum := port, unit_id := 1, Register := cr[i].Reg, length := cr[i].Length, typeFunct := 16#3, debug := DEBUG_MODBUS);
+         IF serMBRead.status = 0 THEN 
+            payloadMQTT := " { $"Conf_"+cr[i].Tag+"$" :$"" + bufToStrHex(frame:=ADDR(serMBRead.buf[3]), len:=cr[i].Length*2)+"$" }";
+            storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=port) + "/_Configuration/Raw/"    , payload := payloadMQTT);
+              if debug THEN 
+                DebugMsg( message := "Recept : " + bufToStrHex(frame:=ADDR(serMBRead.buf[3]), len:=cr[i].Length*2));
+             END_IF;
+          else
+             if debug THEN 
+                DebugMsg( message := "Error Read : " + cr[i].Tag + ", status = "+getTextStatus(status:=serMBRead.status));
+             END_IF;
+         END_IF;
+      end_FOR;
+      payloadMQTT := " { $"PollTime$" :"+dintToStr(v:=clockNow()+CST_DELTA_X32_UNIX)+"}";
+      storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=port) + "/_Configuration/Raw/"    , payload := payloadMQTT);
+        
+   
+END_FUNCTION;
+
+FUNCTION readOneConf;
+VAR_INPUT
+   port :  SINT;
+   numCr : SINT;
+   debug : BOOL:=True;
+END_VAR;
+VAR
+   i : sint;
+END_VAR;
+      i:=numCr;
+      DebugMsg( message := "Read Conf " + intToStr(v:=i) + " on Port : " + intToStr(v:=port) + " ragister : " + intToStr(v:=cr[i].Reg));
+      serMBRead(portNum := port, unit_id := 1, Register := cr[i].Reg, length := cr[i].Length, typeFunct := 16#3, debug := DEBUG_MODBUS);
+      IF serMBRead.status = 0 THEN 
+         payloadMQTT := " { $"Conf_"+cr[i].Tag+"$" :$"" + bufToStrHex(frame:=ADDR(serMBRead.buf[3]), len:=cr[i].Length*2)+"$" }";
+         storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=port) + "/_Configuration/Raw/"    , payload := payloadMQTT);
+           if debug THEN 
+             DebugMsg( message := "Recept : " + bufToStrHex(frame:=ADDR(serMBRead.buf[3]), len:=cr[i].Length*2));
+          END_IF;
+       else
+          if debug THEN 
+             DebugMsg( message := "Error Read : " + cr[i].Tag + ", status = "+getTextStatus(status:=serMBRead.status));
+          END_IF;
+      END_IF;
+      payloadMQTT := " { $"PollTime$" :"+dintToStr(v:=clockNow()+CST_DELTA_X32_UNIX)+"}";
+      storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=port) + "/_Configuration/Raw/"    , payload := payloadMQTT);
+        
+   
+END_FUNCTION;
+        
+
+
+PROGRAM uniflo;
+   VAR
+      linsec            : DINT := 0;
+      linsec_getversion : DINT := 0;
+      linsec_status     : DINT := 0;
+      
+      i                 : INT;
+      d                 : String; 
+      
+      
+      rc                : INT;
+      
+     
+      nbSer          :DINT;
+      
+      // Other Thread
+      gestNetwork    : thManageNetwork;
+      thRecSMS          : thEventSMS;
+      thRecMQTT         : thEventMQTT;
+      thForwardMQTT     : thForwardMQTT;
+      
+      // MQTT Commandes
+      
+      ModbusCmd : typeModBusCmd;
+      
+      
+      valReg : INT := 16#55;
+      writeReg  : ARRAY[0..50] OF INT;
+      tmpIntBuffer : ARRAY[0..100] OF INT;
+      
+   END_VAR;
+
+   // Configure l'application
+   boardSetApplication(filename := "");
+   
+   // Get configuration
+   getConfigFromFRAM(debug:=true);
+   getParamFromFRAM(debug:=true);
+   
+   // type de edgeware
+   nbSer := boardGetProfile(index :=13);
+   DebugFmt(message := "Nombre de port série : \4", v4 := nbSer);
+   IF nbSer > 2  THEN
+      TURBO := ON;
+      DebugMsg(message := "TURBO ON");
+   ELSE
+      TURBO := OFF;
+      DebugMsg(message := "TURBO OFF");
+   END_IF;
+
+
+   // SIMUL
+   #IFDEF CST_SIMUL THEN
+      SIMUL := TRUE;
+      DebugMsg(message := "SIMUL ON");
+   #ELSE
+      SIMUL := FALSE;
+      DebugMsg(message := "SIMUL OFF");
+   #END_IF
+
+
+   // Annul GSM si test sur X400
+   #IFDEF NO_GPRS THEN
+    GSM_OFF := ON;
+   #END_IF
+   
+   if boardType()=204 THEN
+      //GSM_OFF := ON;
+      rc := guiSysMenuEnable(enable := TRUE, timeout := 20);
+   END_IF;
+
+   // NETWORK
+   if not GSM_OFF THEN
+      DebugMsg(message := "Initialize GSM...");
+      gsmPower(power := ON);
+   ELSE
+      DebugMsg(message := "GSM OFF cause DIP SWITCH 2 ON");
+   END_IF;
+
+   DebugFmt(message:="Config Lan");
+   currentIface := 1;
+  // gestNetwork();
+    // Other threads
+      thRecSMS();
+/*   #IFDEF NOT NO_NET THEN
+      configLan();
+      setGW(open := True);
+   #END_IF
+*/ rc:=gprsOpen();
+
+      // Wait for GPRS connected (after this, we are connected to the Internet)
+   WHILE NOT gprsConnected() DO
+      DebugMsg(message:=CST_PREFIX_DEBUG_NETWORK+"Waiting for GPRS connection");
+      Sleep(delay:=2500);
+   END_WHILE;
+   
+   gwOpen();
+   
+
+
+   // UNIFLO
+   
+   
+   
+   if SIMUL THEN
+      DebugMsg(message := "SIMUL ON cause DIP SWITCH 1 ON");
+   ELSE
+      DebugMsg(message := "SIMUL OFF");
+   END_IF;
+   configRegisters();
+   configConfRegisters();
+
+
+   // MQTTT
+   DebugFmt(message:="Config MQTT");
+   MxForwardIndex:= mxInit();
+   configMQTT();
+   connectMQTT ( iface :=currentIface);
+   thForwardMQTT();
+   thRecMQTT();
+   mqtt_channel := chInit(msgMax:=10);
+
+
+   // Active la sortie si alimentation <15
+   IF boardSupplyVoltage() < 150 THEN 
+      DebugFmt(message := "Tension d'alimentation ok : \1", v1 := boardSupplyVoltage());
+      boardDCOut(enable:=ON);
+      UNIWIRE := True;
+   ELSE
+      DebugFmt(message := "Alimentation trop élevée : \1", v1 := boardSupplyVoltage());
+      boardDCOut(enable:=OFF);
+      UNIWIRE := False;
+   END_IF;
+
+  
+ 
+   // set time from GSM
+   updateTime();
+   
+  // MODBUS
+  //Ser 1
+  serOpen(port:=0, baud:=2400, parity:=0, bit:=8, stopbit := 1, rs485 := FALSE);
+  ser1Rec(port:=0, enable:=TRUE, frame:=ADDR(rx1Buffer), maxSize:=SIZEOF(rx1Buffer));
+  
+  if TURBO = ON THEN
+     // Ser 2
+      serOpen(port:=1, baud:=2400, parity:=0, bit:=8, stopbit := 1, rs485 := FALSE);
+      ser2Rec(port:=1, enable:=TRUE, frame:=ADDR(rx2Buffer), maxSize:=SIZEOF(rx2Buffer));
+      serSetRTS(port:=1,state:=OFF);
+      serSetDTR(port:=1,state:=TRUE);
+      serSetHandshake(port:=1, RtsCts:=FALSE);
+  end_if;
+   
+  linsec_getversion := clockNow() + cfg.ScanClass[CST_SCANCLASS_10_MN];
+  
+BEGIN
+   LED_LAN :=  netConnected(iface:=currentIface);
+   LED_GW   := gwConnected();
+
+   // Send Commande to modbus From MQTT
+   chRead_retVal := chRead(ch:=mqtt_channel,msg:=ADDR(ModbusCmd),lenmax:=SIZEOF(ModbusCmd),timeout := 5);
+   WHILE chRead_retVal >0 DO
+      if CST_DEBUG_MQTT_RECEPT>0 then DebugMsg(message := "------------------------------"); end_if;
+      if CST_DEBUG_MQTT_RECEPT>0 then DebugMsg(message := "Receive Command From MQTT"); end_if;
+      if CST_DEBUG_MQTT_RECEPT>0 then DebugFmt(message := "Port=\1, type=\2, reg=\3, length=" + intToStr(v:=ModbusCmd.length),v1:=ModbusCmd.port, v2:=ModbusCmd.type,v3:=ModbusCmd.reg); end_if;
+      if ModbusCmd.func = CST_MODBUSCMD_WRITE_HR OR ModbusCmd.func = CST_MODBUSCMD_WRITE_HR THEN
+         serMBWrite(portNum := ModbusCmd.port, unit_id :=1,  Register := ModbusCmd.reg,type := ModbusCmd.type, length := ModbusCmd.length, ptrValues := ADDR(ModbusCmd.values),debug := DEBUG_MODBUS);
+         if CST_DEBUG_MQTT_RECEPT>0 then DebugMsg(message:="WRITE : " + (getTextStatus(status:=serMBWrite.status))); end_if;
+         
+         payloadMQTT := " { $"Name$" :$"WRITE$", $"Reg$" :"+intToStr( v:=ModbusCmd.reg)+", $"SequenceNumber$" :"+intToStr( v:=ModbusCmd.seqNumber)+", $"Status$" :"+intToStr(v:=serMBWrite.status)+" ,$"PollTime$" :"+dintToStr(v:=clockNow()+CST_DELTA_X32_UNIX)+",$"Quality$":$"GOOD$"}";
+         storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=ModbusCmd.port) + "/WRITE"  , payload := payloadMQTT);
+                  
+      ELSIF  ModbusCmd.func = CST_MODBUSCMD_READ_HR THEN
+         if ModbusCmd.type = CST_TYPE_READ_CONF THEN
+            readConf(port := ModbusCmd.port);
+         ELSIF ModbusCmd.type = CST_TYPE_READ_ONE_CONF THEN 
+            readOneConf(numCr := sint(ModbusCmd.reg), port := ModbusCmd.port);
+         ELSIF ModbusCmd.type = CST_TYPE_READ_ALL THEN
+            DebugMsg( message := "Read All : " + intToStr(v:=ModbusCmd.port));
+            FOR i:=0 TO nbRegisters-1 DO 
+               registers[i].Update[ModbusCmd.port] := clockNow() - cfg.ScanClass[registers[i].ScanClass];
+            END_FOR;
+            linsec_status := clockNow();
+            linsec_getversion := clockNow();
+         ELSE
+            serMBRead(portNum := ModbusCmd.port, unit_id := 1, Register := ModbusCmd.reg, length := ModbusCmd.length, debug := DEBUG_MODBUS);
+            if CST_DEBUG_MQTT_RECEPT>0 then DebugMsg(message:="READ : " + (getTextStatus(status:=serMBRead.status))); end_if;
+            if serMBRead.status=CST_MODBUS_STATUS_4_TIMEOUT THEN
+                  portNbTimeout := portNbTimeout + 1;
+                  if portNbTimeout>2 THEN
+                     if CST_DEBUG_MQTT_RECEPT>0 then DebugFmt(message := "Equipment probably disconnected");end_if;
+                     statusPort:=CST_MODBUS_STATUS_4_TIMEOUT;
+                  end_if;
+               END_IF;
+            end_if;
+            if serMBRead.status<>CST_MODBUS_STATUS_0_OK THEN
+               DebugFmt(message :=  " READ \1 -> status=\2-" + getTextStatus(status:=serMBRead.status), v1 :=ModbusCmd.reg, v2 := serMBRead.status);
+            END_IF;
+            IF serMBRead.status = 0 THEN 
+               readRegister.Type := ModbusCmd.type;
+               DebugFmt(message :=  "Type = " + intToStr(v:=readRegister.Type));
+               IF readRegister.Type = CST_TYPE_UINT32 THEN
+                  getFloat(dest:=ADDR(readRegister.ValueF), 
+                        b3:=serMBRead.buf[6],
+                        b2:=serMBRead.buf[5],
+                        b1:=serMBRead.buf[4],
+                        b0:=serMBRead.buf[3]
+                        );
+                  readRegister.Update[actualPort] := clockNow();
+                  payloadMQTT := " { $"Name$" :$"HR"+intToStr( v:=ModbusCmd.reg)+"$", $"Value$" :"+floatToStr(v:=readRegister.ValueF)+" ,$"PollTime$" :"+dintToStr(v:=readRegister.Update[actualPort]+CST_DELTA_X32_UNIX)+",$"Quality$":$"GOOD$"}";
+                  storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=actualPort) + "/" + intToStr( v:=ModbusCmd.reg) , payload := payloadMQTT);
+                  if CST_DEBUG_MQTT_RECEPT>0 then DebugMsg( message := intToStr( v:=ModbusCmd.reg) + " = " + floatToStr(v:=readRegister.ValueF)); end_if;
+               ELSIF readRegister.Type = CST_TYPE_INTREAL THEN
+                  getINTREAL(dest:=ADDR(readRegister.ValueF), 
+                        b0:= serMBRead.buf[3], 
+                        b1:= serMBRead.buf[4],
+                        b2:= serMBRead.buf[5], 
+                        b3:= serMBRead.buf[6],
+                        b4:= serMBRead.buf[7], 
+                        b5:= serMBRead.buf[8],
+                        b6:= serMBRead.buf[9], 
+                        b7:= serMBRead.buf[10]
+                        );
+        
+                  readRegister.Update[actualPort] := clockNow();
+                  payloadMQTT := " { $"Name$" :$"HR"+intToStr( v:=ModbusCmd.reg)+"$", $"Value$" :"+floatToStr(v:=readRegister.ValueF)+" ,$"PollTime$" :"+dintToStr(v:=readRegister.Update[actualPort]+CST_DELTA_X32_UNIX)+",$"Quality$":$"GOOD$"}";
+                  storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=actualPort) + "/" + intToStr( v:=ModbusCmd.reg) , payload := payloadMQTT);
+                  if CST_DEBUG_MQTT_RECEPT>0 then DebugMsg( message := intToStr( v:=ModbusCmd.reg) + " = " + floatToStr(v:=readRegister.ValueF)); end_if;
+               ELSIF readRegister.Type = CST_TYPE_UINT32 THEN
+                  getDINT(dest:=ADDR(readRegister.ValueD), 
+                        b0:= serMBRead.buf[3], 
+                        b1:= serMBRead.buf[4],
+                        b2:= serMBRead.buf[5], 
+                        b3:= serMBRead.buf[6]
+                        );
+                  readRegister.Update[actualPort] := clockNow();
+                  payloadMQTT := " { $"Name$" :$"HR"+intToStr( v:=ModbusCmd.reg)+"$", $"Value$" :"+ dintToStr(v:=readRegister.ValueD)+" ,$"PollTime$" :"+dintToStr(v:=readRegister.Update[actualPort]+CST_DELTA_X32_UNIX)+",$"Quality$":$"GOOD$"}";
+                  storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=actualPort) + "/" + intToStr( v:=ModbusCmd.reg) , payload := payloadMQTT);
+                  if CST_DEBUG_MQTT_RECEPT>0 then DebugMsg( message := intToStr( v:=ModbusCmd.reg) + " = " +  dintToStr(v:=readRegister.ValueD)); end_if;
+                  
+               ELSIF readRegister.Type = CST_TYPE_UINT16 THEN
+                  getDINT(dest:=ADDR(readRegister.ValueD), 
+                        b0:= serMBRead.buf[4], 
+                        b1:= serMBRead.buf[3],
+                        b2:= 0, 
+                        b3:= 0
+                        );
+                  readRegister.Update[actualPort] := clockNow();
+                  payloadMQTT := " { $"Name$" :$"HR"+intToStr( v:=ModbusCmd.reg)+"$", $"Value$" :"+ dintToStr(v:=readRegister.ValueD)+" ,$"PollTime$" :"+dintToStr(v:=readRegister.Update[actualPort]+CST_DELTA_X32_UNIX)+",$"Quality$":$"GOOD$"}";
+                  storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=actualPort) + "/" + intToStr( v:=ModbusCmd.reg) , payload := payloadMQTT);
+                  if CST_DEBUG_MQTT_RECEPT>0 then DebugMsg( message := intToStr( v:=ModbusCmd.reg) + " = " +  dintToStr(v:=readRegister.ValueD)); end_if;
+
+               ELSIF readRegister.Type = CST_TYPE_UINT8 THEN
+                  getDINT(dest:=ADDR(readRegister.ValueD), 
+                        b0:= serMBRead.buf[3], 
+                        b1:= 0,
+                        b2:= 0, 
+                        b3:= 0
+                        );
+                  readRegister.Update[actualPort] := clockNow();
+                  payloadMQTT := " { $"Name$" :$"HR"+intToStr( v:=ModbusCmd.reg)+"$", $"Value$" :"+ dintToStr(v:=readRegister.ValueD)+" ,$"PollTime$" :"+dintToStr(v:=readRegister.Update[actualPort]+CST_DELTA_X32_UNIX)+",$"Quality$":$"GOOD$"}";
+                  storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=actualPort) + "/" + intToStr( v:=ModbusCmd.reg) , payload := payloadMQTT);
+                  if CST_DEBUG_MQTT_RECEPT>0 then DebugMsg( message := intToStr( v:=ModbusCmd.reg) + " = " +  dintToStr(v:=readRegister.ValueD)); end_if;
+
+               END_IF;
+          END_IF;
+      ELSE
+         if CST_DEBUG_MQTT_RECEPT>0 then DebugMsg(message := "Unknown type : " + sintToStr(v:=ModbusCmd.func)); end_if;
+      END_IF;
+      chRead_retVal := chRead(ch:=mqtt_channel,msg:=ADDR(ModbusCmd),lenmax:=SIZEOF(ModbusCmd),timeout := 5);
+   END_WHILE;
+
+
+   IF clockNow() > linsec_getversion THEN
+      getVersion(port := 0);
+      IF TURBO = ON THEN
+         getVersion(port := 1);
+         
+      END_IF; 
+      linsec_getversion := clockNow() + cfg.ScanClass[CST_SCANCLASS_1_HR];
+  END_IF;
+
+   IF clockNow() > linsec_status THEN
+      DebugMsg(message := "------------------------------");
+      DebugMsg(message := "Reading EW status");
+      payloadMQTT := " { $"Device Temperature$" :"+floatToStr(v:=float(boardTemperature())/100.0)+"}";
+      storeMQTT(topic := topicMQTT  , payload := payloadMQTT);
+      payloadMQTT := " { $"Device Battery Level$" :"+intToStr(v:=batPowerLevel())+"}";
+      storeMQTT(topic := topicMQTT  , payload := payloadMQTT);
+      payloadMQTT := " { $"GSM Signal Level$" :"+intToStr(v:=gsmSignalLevel(dbm :=True))+"}";
+      storeMQTT(topic := topicMQTT  , payload := payloadMQTT);
+      
+      linsec_status := clockNow() + cfg.ScanClass[CST_SCANCLASS_30_MN];
+   END_IF;
+
+  
+  
+  IF clockNow() > linsec THEN
+
+   DebugMsg(message := "------------------------------");
+   DebugMsg(message := "Checking trigger port " + sintToStr(v:=actualPort) );
+   clock(Linsec:=clockNow());
+   DebugFmt(message := "\1:\2:\3",v1:=clock.hour, v2:=clock.minute, v3:=clock.second);
+   FOR i:=0 TO nbRegisters-1 DO
+      IF clockNow()>registers[i].Update[actualPort] + cfg.ScanClass[registers[i].ScanClass] THEN
+         // if last reading is timeout, pass reading until next trigger but send bad values to Ignition
+         if statusPort=CST_MODBUS_STATUS_0_OK THEN
+            serMBRead(portNum := actualPort, unit_id := 1, Register := registers[i].Address, length := registers[i].Length, typeFunct := 16#3, debug := DEBUG_MODBUS);
+            if serMBRead.status=CST_MODBUS_STATUS_4_TIMEOUT THEN
+               portNbTimeout := portNbTimeout + 1;
+               if portNbTimeout>2 THEN
+                  if CST_DEBUG_MQTT_RECEPT>0 then DebugFmt(message := "Equipment probably disconnected"); end_if;
+                  statusPort:=CST_MODBUS_STATUS_4_TIMEOUT;
+               end_if;
+            END_IF;
+         end_if;
+         if serMBRead.status<>CST_MODBUS_STATUS_0_OK AND SIMUL=False THEN
+            DebugFmt(message := strFromMemory(src:=ADDR(registers[i].Name), len:=SIZEOF(registers[i].Name)) + " -> status=\1-" + getTextStatus(status:=serMBRead.status), v1 := serMBRead.status);
+         END_IF;
+         IF serMBRead.status = 0 or SIMUL=True THEN 
+            IF registers[i].Type = CST_TYPE_REAL32 THEN
+               getFloat(dest:=ADDR(registers[i].ValueF), 
+                     b3:=serMBRead.buf[6],
+                     b2:=serMBRead.buf[5],
+                     b1:=serMBRead.buf[4],
+                     b0:=serMBRead.buf[3]
+                     );
+               
+               IF SIMUL=True THEN
+                  registers[i].ValueF := float(random(lower:=registers[i].lower,upper:=registers[i].upper));
+                  registers[i].ValueF := registers[i].ValueF / registers[i].ratio; 
+               END_IF;
+               registers[i].Update[actualPort] := clockNow();
+               clock(Linsec:=registers[i].Update[actualPort]+CST_DELTA_X32_UNIX);
+               
+               payloadMQTT := " { $"Name$" :$""+strFromMemory(src:=ADDR(registers[i].Name), len:=SIZEOF(registers[i].Name))+"$", $"Unit$" :$""+strFromMemory(src:=ADDR(registers[i].Unit), len:=SIZEOF(registers[i].Unit))+"$", $"Value$" :"+floatToStr(v:=registers[i].ValueF)+" ,$"PollTime$" :"+dintToStr(v:=registers[i].Update[actualPort]+CST_DELTA_X32_UNIX)+",$"Quality$":$"GOOD$"}";
+               storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=actualPort) + "/" + strFromMemory(src:=ADDR(registers[i].Name), len:=SIZEOF(registers[i].Name)) , payload := payloadMQTT);
+               DebugMsg( message := strFromMemory(src:=ADDR(registers[i].Name), len:=SIZEOF(registers[i].Name)) + " = " + floatToStr(v:=registers[i].ValueF) + " " + strFromMemory(src:=ADDR(registers[i].Unit), len:=SIZEOF(registers[i].Unit)));
+            ELSIF registers[i].Type = CST_TYPE_INTREAL THEN
+               getINTREAL(dest:=ADDR(registers[i].ValueF), 
+                     b0:= serMBRead.buf[3], 
+                     b1:= serMBRead.buf[4],
+                     b2:= serMBRead.buf[5], 
+                     b3:= serMBRead.buf[6],
+                     b4:= serMBRead.buf[7], 
+                     b5:= serMBRead.buf[8],
+                     b6:= serMBRead.buf[9], 
+                     b7:= serMBRead.buf[10]
+                     );
+               IF SIMUL=True THEN
+                  registers[i].ValueF := float(random(lower:=registers[i].lower,upper:=registers[i].upper));
+                  registers[i].ValueF := registers[i].ValueF / registers[i].ratio;
+               END_IF;
+               registers[i].Update[actualPort] := clockNow();
+               clock(Linsec:=registers[i].Update[actualPort]+CST_DELTA_X32_UNIX);
+               DebugMsg( message := strFromMemory(src:=ADDR(registers[i].Name), len:=SIZEOF(registers[i].Name)) + " = " + floatToStr(v:=registers[i].ValueF) + " " + strFromMemory(src:=ADDR(registers[i].Unit), len:=SIZEOF(registers[i].Unit)));
+               payloadMQTT := "{ $"Name$" :$""+strFromMemory(src:=ADDR(registers[i].Name), len:=SIZEOF(registers[i].Name))+"$", $"Unit$" :$""+strFromMemory(src:=ADDR(registers[i].Unit), len:=SIZEOF(registers[i].Unit))+"$", $"Value$" :"+floatToStr(v:=registers[i].ValueF)+" ,$"PollTime$" :"+dintToStr(v:=registers[i].Update[actualPort]+CST_DELTA_X32_UNIX)+",$"Quality$":$"GOOD$"}";
+               storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=actualPort) + "/" +  strFromMemory(src:=ADDR(registers[i].Name), len:=SIZEOF(registers[i].Name)) , payload := payloadMQTT);
+            ELSIF registers[i].Type = CST_TYPE_UINT32 THEN
+               getDINT(dest:=ADDR(registers[i].ValueD), 
+                     b0:= serMBRead.buf[3], 
+                     b1:= serMBRead.buf[4],
+                     b2:= serMBRead.buf[5], 
+                     b3:= serMBRead.buf[6]
+                     );
+               IF SIMUL=True THEN
+                  registers[i].ValueD := random(lower:=registers[i].lower,upper:=registers[i].upper);
+               END_IF;
+               registers[i].Update[actualPort] := clockNow();
+               clock(Linsec:=registers[i].Update[actualPort]+CST_DELTA_X32_UNIX);
+               DebugMsg( message := strFromMemory(src:=ADDR(registers[i].Name), len:=SIZEOF(registers[i].Name)) + " = " + dintToStr(v:=registers[i].ValueD) + " " + strFromMemory(src:=ADDR(registers[i].Unit), len:=SIZEOF(registers[i].Unit)));
+               payloadMQTT := "{ $"Name$" :$""+strFromMemory(src:=ADDR(registers[i].Name), len:=SIZEOF(registers[i].Name))+"$", $"Unit$" :$""+strFromMemory(src:=ADDR(registers[i].Unit), len:=SIZEOF(registers[i].Unit))+"$", $"Value$" :"+dintToStr(v:=registers[i].ValueD)+" ,$"PollTime$" :"+dintToStr(v:=registers[i].Update[actualPort]+CST_DELTA_X32_UNIX)+",$"Quality$":$"GOOD$"}";
+               storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=actualPort) + "/" +  strFromMemory(src:=ADDR(registers[i].Name), len:=SIZEOF(registers[i].Name)) , payload := payloadMQTT);
+            ELSIF registers[i].Type = CST_TYPE_UINT8 THEN
+               getDINT(dest:=ADDR(registers[i].ValueD), 
+                     b0:= serMBRead.buf[3], 
+                     b1:= 0,
+                     b2:= 0, 
+                     b3:= 0
+                     );
+               IF SIMUL=True THEN
+                  registers[i].ValueD := random(lower:=registers[i].lower,upper:=registers[i].upper);
+               END_IF;
+               registers[i].Update[actualPort] := clockNow();
+               clock(Linsec:=registers[i].Update[actualPort]+CST_DELTA_X32_UNIX);
+               DebugMsg( message := strFromMemory(src:=ADDR(registers[i].Name), len:=SIZEOF(registers[i].Name)) + " = " + dintToStr(v:=registers[i].ValueD) + " " + strFromMemory(src:=ADDR(registers[i].Unit), len:=SIZEOF(registers[i].Unit)));
+               payloadMQTT := "{ $"Name$" :$""+strFromMemory(src:=ADDR(registers[i].Name), len:=SIZEOF(registers[i].Name))+"$", $"Unit$" :$""+strFromMemory(src:=ADDR(registers[i].Unit), len:=SIZEOF(registers[i].Unit))+"$", $"Value$" :"+dintToStr(v:=registers[i].ValueD)+" ,$"PollTime$" :"+dintToStr(v:=registers[i].Update[actualPort]+CST_DELTA_X32_UNIX)+",$"Quality$":$"GOOD$"}";
+               storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=actualPort) + "/" +  strFromMemory(src:=ADDR(registers[i].Name), len:=SIZEOF(registers[i].Name)) , payload := payloadMQTT);
+            END_IF;
+         //"{$"WL$" :" + dintToStr(v:=WL) +",$"P1$" : { $"I$" :10.3, $"S$" :52, $"T$" :119.5 }, $"P2$" : { $"I$" :2.5, $"S$" :173, $"T$" :221.2 }}}";
+         ELSE
+            registers[i].Update[actualPort] := clockNow();
+            payloadMQTT := "{ $"Name$" :$""+strFromMemory(src:=ADDR(registers[i].Name), len:=SIZEOF(registers[i].Name))+"$", $"Unit$" :$""+strFromMemory(src:=ADDR(registers[i].Unit), len:=SIZEOF(registers[i].Unit))+"$", $"Value$" :"+dintToStr(v:=registers[i].ValueD)+" ,$"PollTime$" :"+dintToStr(v:=registers[i].Update[actualPort]+CST_DELTA_X32_UNIX)+",$"Quality$":$"BAD$"}";
+            storeMQTT(topic := topicMQTT + "serialPort" + sintToStr(v:=actualPort) + "/" +  strFromMemory(src:=ADDR(registers[i].Name), len:=SIZEOF(registers[i].Name)) , payload := payloadMQTT);          
+         END_IF;
+      END_IF; 
+    END_FOR;
+    
+    statusPort :=CST_MODBUS_STATUS_0_OK ;
+    portNbTimeout := 0;
+    
+    actualPort := actualPort + 1;
+    if (actualPort>1 AND TURBO = ON) or (actualPort>0 AND TURBO = OFF)  THEN
+       actualPort := 0;
+    // Set next reading
+       if currentIface = 1 THEN
+         linsec := clockNow() + 30;
+       else
+         linsec := clockNow() + 30;
+       end_if;
+    END_IF;
+  END_IF;
+END;
+END_PROGRAM;
+

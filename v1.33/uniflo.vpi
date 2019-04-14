@@ -1,0 +1,30 @@
+****************************************
+*** VPLC/2 interface definition file ***
+****************************************
+Program name: uniflo
+DSEG size   : 9736 bytes
+
+   name                       type         ival  info
+----------------------------------------------------------------------------
+*** INPUTS:
+*** OUTPUTS:
+---DOUT_1                     bool           0  
+---DOUT_2                     bool           0  
+---DOUT_3                     bool           0  
+---DOUT_4                     bool           0  
+---DOUT_5                     bool           0  
+---DOUT_6                     bool           0  
+---DOUT_7                     bool           0  
+---DOUT_8                     bool           0  
+---AOUT_1                     int            0  
+---AOUT_2                     int            0  
+---AOUT_3                     int            0  
+---AOUT_4                     int            0  
+---LED_1                      bool           0  
+---LED_2                      bool           0  
+---LED_3                      bool           0  
+---LED_4                      bool           0  
+---LED_LAN                    bool           0  
+---LED_GW                     bool           0  
+---SIMUL                      bool           0  
+---UNIWIRE                    bool           0  
